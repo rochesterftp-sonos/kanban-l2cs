@@ -1,0 +1,27 @@
+{
+  "name": "kanban-board",
+  "version": "1.0.0",
+  "description": "Kanban board with Google Drive integration for L2CS",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "keywords": ["kanban", "project-management", "google-drive"],
+  "author": "Steve Ventes - L2CS",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "express-session": "^1.19.0",
+    "better-sqlite3": "^11.7.0",
+    "googleapis": "^144.0.0",
+    "multer": "^1.4.5-lts.1",
+    "dotenv": "^16.4.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
