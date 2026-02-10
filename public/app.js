@@ -1,5 +1,5 @@
 // State
-let currentBoard = 'current';
+let currentBoard = 'Marketing & Sales 60-Day Plan';
 let cards = [];
 
 // DOM Elements
@@ -16,6 +16,7 @@ const addCardModal = document.getElementById('add-card-modal');
 const uploadModal = document.getElementById('upload-modal');
 const addCardForm = document.getElementById('add-card-form');
 const uploadForm = document.getElementById('upload-form');
+const kanbanContainer = document.querySelector('.kanban-container');
 
 // Initialize
 checkAuth();
@@ -96,7 +97,8 @@ boardTabs.forEach(tab => {
 // Load board
 async function loadBoard() {
     try {
-        const response = await fetch(`/api/cards/${currentBoard}`);
+        const encodedBoard = encodeURIComponent(currentBoard);
+        const response = await fetch(`/api/cards/${encodedBoard}`);
         cards = await response.json();
         renderBoard();
     } catch (error) {
@@ -105,26 +107,46 @@ async function loadBoard() {
 }
 
 function renderBoard() {
-    // Clear columns
-    document.querySelectorAll('.cards').forEach(col => col.innerHTML = '');
+    // Get unique columns for this board
+    const columns = [...new Set(cards.map(c => c.column_name))].sort();
     
-    // Group cards by column
-    const columns = { 'todo': [], 'in-progress': [], 'done': [] };
-    cards.forEach(card => {
-        if (columns[card.column_name]) {
-            columns[card.column_name].push(card);
-        }
-    });
+    // Rebuild kanban container with dynamic columns
+    kanbanContainer.innerHTML = '';
     
-    // Render cards
-    Object.keys(columns).forEach(colName => {
-        const cardsContainer = document.querySelector(`.cards[data-column="${colName}"]`);
-        columns[colName].forEach(card => {
-            cardsContainer.appendChild(createCardElement(card));
+    columns.forEach(colName => {
+        const col = document.createElement('div');
+        col.className = 'column';
+        col.dataset.column = colName;
+        
+        const header = document.createElement('div');
+        header.className = 'column-header';
+        header.innerHTML = `
+            <h2>${colName}</h2>
+            <button class="add-card-btn" data-column="${colName}">+</button>
+        `;
+        
+        const cardsDiv = document.createElement('div');
+        cardsDiv.className = 'cards';
+        cardsDiv.dataset.column = colName;
+        
+        // Add cards for this column
+        cards
+            .filter(card => card.column_name === colName)
+            .sort((a, b) => a.position - b.position)
+            .forEach(card => {
+                cardsDiv.appendChild(createCardElement(card));
+            });
+        
+        col.appendChild(header);
+        col.appendChild(cardsDiv);
+        kanbanContainer.appendChild(col);
+        
+        // Add event listener to add card button
+        header.querySelector('.add-card-btn').addEventListener('click', () => {
+            openAddCardModal(colName);
         });
     });
     
-    // Setup drag and drop
     setupDragAndDrop();
 }
 
@@ -138,154 +160,126 @@ function createCardElement(card) {
     
     div.innerHTML = `
         <div class="card-header">
-            <div class="card-title">${escapeHtml(card.title)}</div>
-            <span class="card-priority ${priorityClass}">${priorityClass}</span>
+            <h3>${card.title}</h3>
+            <span class="priority ${priorityClass}">${card.priority || 'medium'}</span>
         </div>
-        ${card.description ? `<div class="card-description">${escapeHtml(card.description)}</div>` : ''}
-        <div class="card-actions">
-            <button class="delete-btn" onclick="deleteCard(${card.id})">Delete</button>
-        </div>
+        <p class="card-description">${card.description || ''}</p>
+        <button class="delete-btn" data-id="${card.id}">🗑️</button>
     `;
+    
+    div.querySelector('.delete-btn').addEventListener('click', async () => {
+        if (confirm('Delete this card?')) {
+            await fetch(`/api/cards/${card.id}`, { method: 'DELETE' });
+            loadBoard();
+        }
+    });
     
     return div;
 }
 
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
-
-// Drag and drop
 function setupDragAndDrop() {
-    const draggables = document.querySelectorAll('.card');
-    const containers = document.querySelectorAll('.cards');
+    const cards = document.querySelectorAll('.card');
+    const cardsContainers = document.querySelectorAll('.cards');
     
-    draggables.forEach(draggable => {
-        draggable.addEventListener('dragstart', () => {
-            draggable.classList.add('dragging');
+    cards.forEach(card => {
+        card.addEventListener('dragstart', (e) => {
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('cardId', card.dataset.id);
+        });
+    });
+    
+    cardsContainers.forEach(container => {
+        container.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            container.style.backgroundColor = 'rgba(0,0,0,0.05)';
         });
         
-        draggable.addEventListener('dragend', async () => {
-            draggable.classList.remove('dragging');
-            
-            // Get new column
-            const newColumn = draggable.closest('.cards').dataset.column;
-            const cardId = draggable.dataset.id;
-            
-            // Get position
-            const cardsInColumn = Array.from(draggable.closest('.cards').children);
-            const position = cardsInColumn.indexOf(draggable);
-            
-            // Find card data
-            const card = cards.find(c => c.id == cardId);
-            if (card) {
-                await updateCard(cardId, {
-                    ...card,
-                    column_name: newColumn,
-                    position: position
-                });
-            }
+        container.addEventListener('dragleave', () => {
+            container.style.backgroundColor = '';
         });
-    });
-    
-    containers.forEach(container => {
-        container.addEventListener('dragover', e => {
+        
+        container.addEventListener('drop', async (e) => {
             e.preventDefault();
-            const afterElement = getDragAfterElement(container, e.clientY);
-            const draggable = document.querySelector('.dragging');
-            if (afterElement == null) {
-                container.appendChild(draggable);
-            } else {
-                container.insertBefore(draggable, afterElement);
-            }
+            container.style.backgroundColor = '';
+            const cardId = e.dataTransfer.getData('cardId');
+            const newColumn = container.dataset.column;
+            
+            await moveCard(cardId, newColumn);
+            loadBoard();
         });
     });
 }
 
-function getDragAfterElement(container, y) {
-    const draggableElements = [...container.querySelectorAll('.card:not(.dragging)')];
-    
-    return draggableElements.reduce((closest, child) => {
-        const box = child.getBoundingClientRect();
-        const offset = y - box.top - box.height / 2;
-        if (offset < 0 && offset > closest.offset) {
-            return { offset: offset, element: child };
-        } else {
-            return closest;
-        }
-    }, { offset: Number.NEGATIVE_INFINITY }).element;
-}
-
-// Add card
-document.querySelectorAll('.add-card-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-        document.getElementById('card-column').value = btn.dataset.column;
-        addCardModal.classList.remove('hidden');
-    });
-});
-
-addCardForm.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    
-    const cardData = {
-        board: currentBoard,
-        column_name: document.getElementById('card-column').value,
-        title: document.getElementById('card-title').value,
-        description: document.getElementById('card-description').value,
-        priority: document.getElementById('card-priority').value
-    };
+async function moveCard(cardId, newColumn) {
+    const card = cards.find(c => c.id == cardId);
+    if (!card) return;
     
     try {
-        const response = await fetch('/api/cards', {
+        await fetch(`/api/cards/${cardId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                column_name: newColumn,
+                position: 0,
+                title: card.title,
+                description: card.description,
+                priority: card.priority
+            })
+        });
+    } catch (error) {
+        console.error('Failed to move card:', error);
+    }
+}
+
+function openAddCardModal(column) {
+    document.getElementById('card-column').value = column;
+    addCardModal.classList.remove('hidden');
+}
+
+// Add card form
+addCardForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const title = document.getElementById('card-title').value;
+    const description = document.getElementById('card-description').value;
+    const priority = document.getElementById('card-priority').value;
+    const column = document.getElementById('card-column').value;
+    
+    try {
+        await fetch('/api/cards', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(cardData)
+            body: JSON.stringify({
+                board: currentBoard,
+                column_name: column,
+                title,
+                description,
+                priority
+            })
         });
         
-        if (response.ok) {
-            addCardModal.classList.add('hidden');
-            addCardForm.reset();
-            loadBoard();
-        }
+        addCardModal.classList.add('hidden');
+        addCardForm.reset();
+        loadBoard();
     } catch (error) {
         console.error('Failed to add card:', error);
     }
 });
 
-async function updateCard(id, cardData) {
-    try {
-        await fetch(`/api/cards/${id}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(cardData)
-        });
-    } catch (error) {
-        console.error('Failed to update card:', error);
-    }
-}
+// Modal controls
+document.querySelectorAll('.close-modal, .cancel-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+        e.target.closest('.modal').classList.add('hidden');
+    });
+});
 
-async function deleteCard(id) {
-    if (!confirm('Delete this card?')) return;
-    
-    try {
-        const response = await fetch(`/api/cards/${id}`, { method: 'DELETE' });
-        if (response.ok) {
-            loadBoard();
-        }
-    } catch (error) {
-        console.error('Failed to delete card:', error);
-    }
-}
-
-// File upload
 uploadBtn.addEventListener('click', () => {
     uploadModal.classList.remove('hidden');
 });
 
+// Upload form
 uploadForm.addEventListener('submit', async (e) => {
     e.preventDefault();
-    
     const fileInput = document.getElementById('file-input');
     const file = fileInput.files[0];
     
@@ -294,38 +288,26 @@ uploadForm.addEventListener('submit', async (e) => {
     const formData = new FormData();
     formData.append('file', file);
     
-    const status = document.getElementById('upload-status');
-    status.textContent = 'Uploading...';
-    status.className = '';
-    status.classList.remove('hidden');
-    
     try {
         const response = await fetch('/api/upload', {
             method: 'POST',
             body: formData
         });
         
-        const result = await response.json();
-        
         if (response.ok) {
-            status.textContent = result.gdriveUrl 
-                ? `✅ Uploaded to Google Drive: ${result.filename}`
-                : `✅ Uploaded: ${result.filename}`;
-            status.classList.add('success');
-            
+            document.getElementById('upload-status').textContent = '✅ Upload successful!';
+            document.getElementById('upload-status').classList.remove('hidden');
             setTimeout(() => {
                 uploadModal.classList.add('hidden');
                 uploadForm.reset();
-                status.classList.add('hidden');
+                document.getElementById('upload-status').classList.add('hidden');
                 loadUploads();
             }, 2000);
-        } else {
-            status.textContent = `❌ Upload failed: ${result.error}`;
-            status.classList.add('error');
         }
     } catch (error) {
-        status.textContent = `❌ Upload failed: ${error.message}`;
-        status.classList.add('error');
+        console.error('Upload failed:', error);
+        document.getElementById('upload-status').textContent = '❌ Upload failed';
+        document.getElementById('upload-status').classList.remove('hidden');
     }
 });
 
@@ -334,34 +316,17 @@ async function loadUploads() {
     try {
         const response = await fetch('/api/uploads');
         const uploads = await response.json();
+        const uploadsList = document.getElementById('uploads-list');
         
-        const list = document.getElementById('uploads-list');
-        list.innerHTML = uploads.length 
-            ? uploads.map(u => `
-                <div class="upload-item">
-                    <span>${u.filename}</span>
-                    ${u.gdrive_url 
-                        ? `<a href="${u.gdrive_url}" target="_blank">View in Drive →</a>`
-                        : '<span style="color: var(--text-light);">No Drive link</span>'}
-                </div>
-            `).join('')
-            : '<p style="text-align: center; color: var(--text-light);">No uploads yet</p>';
+        uploadsList.innerHTML = uploads.slice(0, 5).map(upload => `
+            <div class="upload-item">
+                <a href="${upload.gdrive_url || '#'}" target="_blank">
+                    📄 ${upload.filename}
+                </a>
+                <span class="upload-date">${new Date(upload.uploaded_at).toLocaleDateString()}</span>
+            </div>
+        `).join('');
     } catch (error) {
         console.error('Failed to load uploads:', error);
     }
 }
-
-// Modal close handlers
-document.querySelectorAll('.close-modal, .cancel-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-        addCardModal.classList.add('hidden');
-        uploadModal.classList.add('hidden');
-    });
-});
-
-// Close modal on outside click
-window.addEventListener('click', (e) => {
-    if (e.target.classList.contains('modal')) {
-        e.target.classList.add('hidden');
-    }
-});
